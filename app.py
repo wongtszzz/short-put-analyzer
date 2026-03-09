@@ -2,108 +2,74 @@ import streamlit as st
 import numpy as np
 from scipy.stats import norm
 import yfinance as yf
+import pandas as pd
+from datetime import datetime
 
 # --- Page Config ---
-st.set_page_config(page_title="Short Put Strategy Lab", layout="wide")
+st.set_page_config(page_title="Weekly Put Picker", layout="centered")
 
-st.title("🛡️ Short Put Strategy & Risk Lab")
-st.markdown("Focused on **Probability**, **Capital Efficiency**, and **Risk Mitigation**.")
+st.title("⚡ Weekly Short Put Dash")
+st.write("Fastest view of the 2 safest OTM strikes for this week.")
 
-# --- Sidebar: Market Data ---
-st.sidebar.header("1. Market Context")
-ticker_symbol = st.sidebar.text_input("Stock Ticker", value="SPY").upper()
+# --- Sidebar: Ticker Search ---
+ticker_symbol = st.sidebar.text_input("Enter Ticker", value="SPY").upper()
 
 @st.cache_data(ttl=300)
-def fetch_market_data(symbol):
+def get_weekly_data(symbol):
     try:
         t = yf.Ticker(symbol)
-        return t.fast_info['last_price'], t.info.get('longName', symbol)
-    except:
-        return 100.0, "Manual Entry"
+        price = t.fast_info['last_price']
+        # Get only the nearest expiration
+        nearest_exp = t.options[0] 
+        opts = t.option_chain(nearest_exp)
+        puts = opts.puts
+        
+        # Filter for the 2 strikes just below current price (OTM)
+        otm_puts = puts[puts['strike'] <= price].sort_values(by='strike', ascending=False).head(2)
+        return t, price, nearest_exp, otm_puts
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
+        return None, None, None, None
 
-live_price, co_name = fetch_market_data(ticker_symbol)
-st.sidebar.subheader(f"{co_name}")
+ticker_obj, live_price, exp_date, strike_df = get_weekly_data(ticker_symbol)
 
-# --- Sidebar: Trade Parameters ---
-st.sidebar.header("2. Position Details")
-S = st.sidebar.number_input("Current Stock Price ($)", value=float(live_price))
-K = st.sidebar.number_input("Strike Price ($)", value=float(live_price * 0.95))
-premium = st.sidebar.number_input("Premium per Share ($)", value=1.50)
-T_days = st.sidebar.number_input("Days to Expiration", value=30, min_value=1)
-iv = st.sidebar.slider("Implied Volatility (IV %)", 10.0, 150.0, 30.0) / 100
-r = 0.045 # 4.5% Risk Free Rate
+if ticker_obj and not strike_df.empty:
+    st.subheader(f"{ticker_symbol} @ ${live_price:.2f}")
+    st.info(f"📅 **Expires:** {exp_date} (This Week)")
 
-# --- Calculations ---
-T = T_days / 365.0
-# Standard deviation for the move (Expected Move)
-expected_move_std = S * iv * np.sqrt(T)
+    # --- Display Top 2 Strikes ---
+    for index, row in strike_df.iterrows():
+        K = row['strike']
+        iv = row['impliedVolatility']
+        premium = (row['bid'] + row['ask']) / 2 if row['bid'] > 0 else row['lastPrice']
+        
+        # Quick Math for Probability
+        days_to_go = (datetime.strptime(exp_date, '%Y-%m-%d') - datetime.now()).days
+        T = max(days_to_go, 1) / 365.0
+        r = 0.045
+        d2 = (np.log(live_price / K) + (r - 0.5 * iv**2) * T) / (iv * np.sqrt(T))
+        prob_otm = norm.cdf(d2) * 100
+        
+        # Layout for each strike
+        with st.container():
+            col1, col2, col3 = st.columns([1, 1, 1])
+            col1.metric(f"Strike Price", f"${K}")
+            col2.metric("Premium (Mid)", f"${premium:.2f}")
+            col3.metric("Prob. Worthless", f"{prob_otm:.1f}%")
+            
+            # Simple Risk Bar
+            st.progress(int(prob_otm))
+            st.markdown(f"**IV:** {iv*100:.1f}% | **Breakeven:** ${K-premium:.2f}")
+            st.divider()
 
-# Black-Scholes for Probability
-d2 = (np.log(S / K) + (r - 0.5 * iv**2) * T) / (iv * np.sqrt(T))
-prob_otm = norm.cdf(d2) * 100
-breakeven = K - premium
+else:
+    st.warning("Could not find weekly options for this ticker. Try a major stock like AAPL or TSLA.")
 
-# Margin & Returns
-capital_required = K * 100 # Cash Secured Requirement
-net_profit = premium * 100
-raw_return = (net_profit / (capital_required - net_profit)) * 100
-annualized_return = raw_return * (365 / T_days)
+# --- Quick Calculation Table ---
+if not strike_df.empty:
+    st.subheader("Comparison Table")
+    summary = strike_df[['strike', 'lastPrice', 'impliedVolatility']].copy()
+    summary.columns = ['Strike', 'Last Price', 'Live IV']
+    st.table(summary)
 
-# --- UI: Top Level Metrics ---
-st.divider()
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Prob. of Max Profit", f"{prob_otm:.1f}%")
-c2.metric("Breakeven Price", f"${breakeven:.2f}")
-c3.metric("Return on Capital", f"{raw_return:.2f}%")
-c4.metric("Annualized Return", f"{annualized_return:.1f}%")
-
-# --- UI: Probability & Risk Analysis ---
-st.divider()
-left_col, right_col = st.columns(2)
-
-with left_col:
-    st.subheader("🎯 Probability Analysis")
-    st.write("Where is the stock likely to be at expiration?")
-    
-    # Probability of touching various levels
-    p_hit_strike = (1 - norm.cdf(d2)) * 100 # Simple estimate
-    p_below_be = (1 - norm.cdf((np.log(S / breakeven) + (r - 0.5 * iv**2) * T) / (iv * np.sqrt(T)))) * 100
-    
-    st.write(f"• Probability of Stock < Strike (${K}): **{p_hit_strike:.1f}%**")
-    st.write(f"• Probability of Loss (Stock < ${breakeven:.2f}): **{p_below_be:.1f}%**")
-    st.write(f"• Expected Move (+/-): **${expected_move_std:.2f}**")
-
-with right_col:
-    st.subheader("💰 Capital & Margin")
-    st.write("How much 'buying power' is at stake?")
-    st.write(f"• Cash-Secured Requirement: **${capital_required:,.2f}**")
-    st.write(f"• Net Premium Collected: **${net_profit:,.2f}**")
-    
-    # Danger Warning
-    if p_hit_strike > 40:
-        st.warning("⚠️ High Risk: Over 40% chance of assignment.")
-    elif p_hit_strike < 15:
-        st.success("✅ Conservative: High probability of keeping premium.")
-    else:
-        st.info("ℹ️ Moderate: Standard income-generation setup.")
-
-# --- Price Shock Simulator ---
-st.divider()
-st.subheader("📉 The 'Crash' Simulator")
-st.write("What happens to your account if the stock drops *instantly* tomorrow?")
-
-shocks = [-2, -5, -10, -15, -20]
-shock_rows = []
-for s in shocks:
-    new_price = S * (1 + s/100)
-    # Estimate loss if assigned at new price
-    loss_at_exp = (breakeven - new_price) * 100 if new_price < breakeven else 0
-    shock_rows.append({
-        "Price Drop": f"{s}%",
-        "New Stock Price": f"${new_price:.2f}",
-        "P&L at Expiration": f"-${abs(loss_at_exp):,.2f}" if loss_at_exp < 0 else "Still Profitable"
-    })
-
-st.table(shock_rows)
-
-st.caption("Note: P&L at Expiration assumes you hold the position until the end and are assigned at the strike.")
+st.caption("Data provided via yfinance. Probability calculated using Black-Scholes.")
