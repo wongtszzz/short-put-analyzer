@@ -1,4 +1,5 @@
 streamlit
+alpaca-py
+pandas
 numpy
 scipy
-requests
