@@ -6,130 +6,90 @@ from scipy.stats import norm
 import pandas as pd
 from datetime import datetime, timedelta
 
-# --- 1. SETUP & SECRETS ---
+# --- 1. CONFIG & BRANDING ---
+st.set_page_config(page_title="Lucky Lab", page_icon="🧪", layout="wide")
+
+# Custom CSS for a cleaner "Lab" look
+st.markdown("""
+    <style>
+    .main { background-color: #f5f7f9; }
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    h1 { color: #1e3a8a; font-family: 'Helvetica Neue', sans-serif; }
+    </style>
+    """, unsafe_content_label=True)
+
+st.title("🧪 Lucky Lab: Options Quant")
+
+# --- 2. KEYS ---
 try:
     API_KEY = st.secrets["ALPACA_KEY"]
     SECRET_KEY = st.secrets["ALPACA_SECRET"]
+    stock_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
+    opt_client = OptionHistoricalDataClient(API_KEY, SECRET_KEY)
 except:
-    st.error("API Keys missing! Please add ALPACA_KEY and ALPACA_SECRET to Streamlit Secrets.")
+    st.warning("⚠️ Lucky Lab is offline. Please add your ALPACA_KEY and ALPACA_SECRET to Streamlit Secrets.")
     st.stop()
 
-stock_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-opt_client = OptionHistoricalDataClient(API_KEY, SECRET_KEY)
-
-st.set_page_config(page_title="Short Put Command Center", layout="wide")
-st.title("🛡️ Short Put Optimizer & Journal")
-
-# --- 2. TABBED INTERFACE ---
-tab1, tab2 = st.tabs(["🔍 Live Put Scanner", "📓 My Trade Journal"])
+# --- 3. TABS ---
+tab1, tab2 = st.tabs(["🔍 Strategy Optimizer", "📓 Trade Journal"])
 
 with tab1:
-    st.header("Scan for 90%+ Safety Puts")
-    ticker_input = st.text_input("Enter Ticker", value="SPY").upper()
+    st.subheader("Naked Put Scanner (90% Prob. Safety)")
+    c1, c2 = st.columns([1, 3])
+    ticker = c1.text_input("Enter Ticker", value="SPY").upper()
     
-    if st.button("Run Alpaca Scan"):
+    if c1.button("🔬 Run Lab Analysis"):
         try:
-            # Get Live Price
-            s_req = StockLatestQuoteRequest(symbol_or_symbols=ticker_input)
-            current_price = stock_client.get_stock_latest_quote(s_req)[ticker_input].ask_price
-            st.metric(f"{ticker_input} Live Price", f"${current_price:.2f}")
+            # Get Price
+            price = stock_client.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=ticker))[ticker].ask_price
+            st.write(f"**Current {ticker} Price:** `${price:.2f}`")
 
-            # Get Nearest Friday Expiry
-            today = datetime.now()
-            days_to_fri = (4 - today.weekday() + 7) % 7
-            if days_to_fri == 0: days_to_fri = 7
-            expiry = today + timedelta(days=days_to_fri)
+            # Logic for Nearest Friday
+            expiry = datetime.now() + timedelta(days=(4 - datetime.now().weekday() + 7) % 7 or 7)
             
-            # Request Option Chain
-            o_req = OptionChainRequest(underlying_symbol=ticker_input, expiration_date=expiry.date())
-            chain = opt_client.get_option_chain(o_req)
+            # Fetch Chain
+            chain = opt_client.get_option_chain(OptionChainRequest(underlying_symbol=ticker, expiration_date=expiry.date()))
             
-            # Logic: Filter and Rank
-            matches = []
-            T = max(days_to_fri, 1) / 365
-            r = 0.045 # 4.5% Rate
-            
+            results = []
             for strike, data in chain.items():
-                if data.type == 'put' and data.strike < current_price:
-                    iv = data.implied_volatility or 0.25
-                    vol = data.volume or 0
+                if data.type == 'put' and data.strike < price:
+                    # Quick Safety Proxy (Black-Scholes Delta approx)
+                    iv = data.implied_volatility or 0.20
+                    t = max((expiry.date() - datetime.now().date()).days, 1) / 365
+                    d2 = (np.log(price/data.strike) + (0.045 - 0.5*iv**2)*t) / (iv*np.sqrt(t))
+                    prob_otm = norm.cdf(d2) * 100
                     
-                    # Probability Math (Safety Check)
-                    d2 = (np.log(current_price / data.strike) + (r - 0.5 * iv**2) * T) / (iv * np.sqrt(T))
-                    prob = norm.cdf(d2) * 100
-                    
-                    # FILTERS: 90% Safety + Volume > 10
-                    if prob >= 90 and vol >= 10:
-                        mid_price = (data.bid_price + data.ask_price) / 2
-                        # IBKR Margin Estimate (Max of 20% or 10% rule)
-                        m_req = max((0.20 * current_price - (current_price - data.strike) + mid_price) * 100, (0.10 * data.strike) * 100)
-                        roc = (mid_price * 100 / m_req) * (365 / days_to_fri) * 100
+                    if prob_otm > 90 and (data.volume or 0) > 5:
+                        premium = (data.bid_price + data.ask_price) / 2
+                        margin = max((0.20*price - (price-data.strike) + premium)*100, (0.10*data.strike)*100)
+                        ann_roc = (premium*100/margin) * (365/max(t*365, 1)) * 100
                         
-                        matches.append({
-                            "Strike": data.strike, "Safety": f"{prob:.1f}%", 
-                            "Volume": vol, "Premium": f"${mid_price:.2f}", 
-                            "Ann. ROC": roc, "Margin Req": f"${m_req:.0f}"
+                        results.append({
+                            "Strike": f"${data.strike}", "Safety": f"{prob_otm:.1f}%",
+                            "Premium": f"${premium:.2f}", "Ann. ROC": f"{ann_roc:.1f}%",
+                            "Margin Req": f"${margin:.0f}"
                         })
 
-            if matches:
-                res_df = pd.DataFrame(matches).sort_values("Ann. ROC", ascending=False).head(5)
-                st.write(f"### Best 90% Safety Strikes (Exp: {expiry.date()})")
-                st.dataframe(res_df, use_container_width=True)
+            if results:
+                st.table(pd.DataFrame(results).sort_values("Ann. ROC", ascending=False).head(5))
             else:
-                st.warning("No strikes found with 90% safety and volume > 10.")
-                
+                st.info("No strikes match the 90% safety threshold today.")
         except Exception as e:
-            st.error(f"Scan failed: {e}")
+            st.error(f"Analysis failed: {e}")
 
 with tab2:
-    st.header("Manual Trade Journal")
-    st.info("Input your trades below to track your performance.")
-    
-    # Initialize session state for trades
+    st.subheader("The Ledger")
     if 'journal' not in st.session_state:
-        st.session_state.journal = pd.DataFrame(columns=[
-            "Ticker", "Strike", "Premium", "Qty", "Entry Date", "Status", "Total P/L ($)"
-        ])
+        st.session_state.journal = pd.DataFrame(columns=["Date", "Ticker", "Strike", "Premium", "Qty", "P/L ($)"])
 
-    # Manual Entry Table
-    edited_df = st.data_editor(
-        st.session_state.journal, 
-        num_rows="dynamic",
-        use_container_width=True,
-        column_config={
-            "Status": st.column_config.SelectboxColumn(options=["Open", "Closed"]),
-            "Entry Date": st.column_config.DateColumn(),
-            "Total P/L ($)": st.column_config.NumberColumn(format="$%d")
-        }
-    )
-    st.session_state.journal = edited_df
+    edited = st.data_editor(st.session_state.journal, num_rows="dynamic", use_container_width=True)
+    st.session_state.journal = edited
 
-    # --- JOURNAL ANALYTICS ---
-    if not edited_df.empty:
-        df = edited_df.copy()
-        df['Entry Date'] = pd.to_datetime(df['Entry Date'])
+    if not edited.empty:
+        df = edited.copy()
+        df['Date'] = pd.to_datetime(df['Date'])
         
-        # Calculate Totals
-        total_p = df['Total P/L ($)'].sum()
-        
-        # Weekly/Monthly Logic
-        now = datetime.now()
-        this_week = df[df['Entry Date'] > (now - timedelta(days=7))]['Total P/L ($)'].sum()
-        this_month = df[df['Entry Date'].dt.month == now.month]['Total P/L ($)'].sum()
-        
-        # Best/Worst
-        best_trade = df.loc[df['Total P/L ($)'].idxmax()] if not df.empty else None
-        worst_trade = df.loc[df['Total P/L ($)'].idxmin()] if not df.empty else None
-
-        st.divider()
         m1, m2, m3 = st.columns(3)
-        m1.metric("Overall Profit", f"${total_p:,.2f}")
-        m2.metric("Weekly Profit", f"${this_week:,.2f}")
-        m3.metric("Monthly Profit", f"${this_month:,.2f}")
-
-        st.divider()
-        c1, c2 = st.columns(2)
-        if best_trade is not None:
-            c1.success(f"🏆 **Best Trade:** {best_trade['Ticker']} ${best_trade['Strike']}P (+${best_trade['Total P/L ($)']})")
-        if worst_trade is not None:
-            c2.error(f"📉 **Worst Trade:** {worst_trade['Ticker']} ${worst_trade['Strike']}P (${worst_trade['Total P/L ($)']})")
+        m1.metric("Total Profit", f"${df['P/L ($)'].sum():,.2f}")
+        m2.metric("Weekly", f"${df[df['Date'] > (datetime.now()-timedelta(days=7))]['P/L ($)'].sum():,.2f}")
+        m3.metric("Monthly", f"${df[df['Date'].dt.month == datetime.now().month]['P/L ($)'].sum():,.2f}")
