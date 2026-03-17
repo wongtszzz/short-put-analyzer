@@ -10,7 +10,7 @@ from alpaca.data.enums import OptionsFeed, DataFeed
 # --- 1. CONFIG & BRANDING ---
 st.set_page_config(page_title="Lucky Quants Lab", page_icon="🧪", layout="wide")
 
-# TOP LEFT BRANDING (Main page, Emoji on Left)
+# TOP LEFT BRANDING
 st.markdown("# 🧪 Lucky Quants Lab")
 st.markdown("---")
 
@@ -27,10 +27,13 @@ except:
 if 'journal_data' not in st.session_state:
     st.session_state.journal_data = pd.DataFrame(columns=["Ticker", "Type", "Strike", "Expiry", "Premium (Total)", "Qty", "Total Premium Collected"])
 
+if 'last_refresh' not in st.session_state:
+    st.session_state.last_refresh = "Never"
+
 # --- 3. TABS ---
 tab1, tab2 = st.tabs(["🔍 Strategy Optimizer", "📓 Lucky Ledger"])
 
-# --- TAB 1: STRATEGY OPTIMIZER (Untouched Logic) ---
+# --- TAB 1: STRATEGY OPTIMIZER (Untouched) ---
 with tab1:
     st.subheader("Naked Put Scanner")
     c1, c2, c3 = st.columns(3)
@@ -53,7 +56,6 @@ with tab1:
                         d2 = (np.log(curr_price/strike_val) + (0.04 - 0.5*iv**2)*t_years) / (iv*np.sqrt(t_years))
                         prob_otm = norm.cdf(d2) * 100
                         if prob_otm >= safety_target:
-                            # FIX: Properly closed parentheses
                             mid = (data.bid_price + data.ask_price) / 2
                             results.append({
                                 "Strike": strike_val, 
@@ -68,13 +70,16 @@ with tab1:
             except Exception as e:
                 st.error(f"Scanner Error: {e}")
 
-# --- TAB 2: LUCKY LEDGER (Pure Manual Logic) ---
+# --- TAB 2: LUCKY LEDGER (Optimized for Pure Calc) ---
 with tab2:
     st.subheader("📓 Trade Ledger")
     
-    # Recalculate Metric on every run
+    # Updated Metric Label with Emoji on the left and Refresh Timestamp
     total_net = pd.to_numeric(st.session_state.journal_data["Total Premium Collected"], errors='coerce').fillna(0).sum()
-    st.metric("Total Net Received (After Fees)", f"${total_net:,.2f}")
+    
+    m1, m2 = st.columns([1, 1])
+    m1.metric("🤑 **Total Premium Collected**", f"${total_net:,.2f}")
+    m2.caption(f"Last Refreshed: {st.session_state.last_refresh}")
 
     with st.expander("➕ Log New Trade", expanded=True):
         l1, l2, l3, l4 = st.columns(4)
@@ -91,7 +96,7 @@ with tab2:
             if strike is None or price_per_share is None:
                 st.error("Please enter both Strike and Price per Share.")
             else:
-                # Math Engine: (Price * 100 * Qty) - IBKR Fees
+                # Math Engine
                 cash_premium = round(float(price_per_share) * 100, 2)
                 comm = max(1.05, 0.70 * qty)
                 net_total = (cash_premium * qty) - comm
@@ -110,18 +115,18 @@ with tab2:
     st.write("### History")
     st.session_state.journal_data = st.data_editor(st.session_state.journal_data, num_rows="dynamic", use_container_width=True)
 
-    # RECALCULATE & REFRESH BUTTON
+    # REFRESH BUTTON
     if st.button("🔄 Refresh & Recalculate"):
         df = st.session_state.journal_data.copy()
         df["Premium (Total)"] = pd.to_numeric(df["Premium (Total)"], errors='coerce').fillna(0)
         df["Qty"] = pd.to_numeric(df["Qty"], errors='coerce').fillna(1)
         
-        # Re-calc IBKR logic for all rows to verify integrity
         df["Total Premium Collected"] = df.apply(
             lambda row: round((row["Premium (Total)"] * row["Qty"]) - max(1.05, 0.70 * row["Qty"]), 2), 
             axis=1
         )
         
         st.session_state.journal_data = df
+        st.session_state.last_refresh = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         st.success("All calculations verified!")
         st.rerun()
