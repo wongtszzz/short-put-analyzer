@@ -87,25 +87,26 @@ with tab1:
 with tab2:
     st.subheader("📓 The Lucky Ledger")
 
-    # --- SAFETY RESET LOGIC ---
-    expected_cols = ["Ticker", "Type", "Strike", "Expiry", "Premium", "Qty", "Commission", "Total Profit"]
+    # --- HARD RESET: FORCE CORRECT COLUMNS ---
+    desired_cols = ["Ticker", "Type", "Strike", "Expiry", "Premium", "Qty", "Commission", "Total Profit"]
     
     if 'journal_data' not in st.session_state:
-        st.session_state.journal_data = pd.DataFrame(columns=expected_cols)
+        st.session_state.journal_data = pd.DataFrame(columns=desired_cols)
     else:
-        # If the user has old data with "Total Credit", rename it to "Total Profit" automatically
-        if "Total Credit" in st.session_state.journal_data.columns:
-            st.session_state.journal_data = st.session_state.journal_data.rename(columns={"Total Credit": "Total Profit"})
+        # Check if "Date" exists and remove it
+        if "Date" in st.session_state.journal_data.columns:
+            st.session_state.journal_data = st.session_state.journal_data.drop(columns=["Date"])
         
-        # Ensure "Commission" exists
-        if "Commission" not in st.session_state.journal_data.columns:
-            st.session_state.journal_data["Commission"] = 0.0
+        # Ensure all required columns exist, adding them if missing from old state
+        for col in desired_cols:
+            if col not in st.session_state.journal_data.columns:
+                st.session_state.journal_data[col] = 0.0
 
     # 1. TOP METRICS
     m1, m2 = st.columns(2)
-    # Convert to numeric to avoid errors if the table is edited manually
-    profits = pd.to_numeric(st.session_state.journal_data["Total Profit"], errors='coerce').fillna(0)
-    overall_p = profits.sum()
+    # Ensure profit is treated as a number for summing
+    numeric_profit = pd.to_numeric(st.session_state.journal_data["Total Profit"], errors='coerce').fillna(0)
+    overall_p = numeric_profit.sum()
     
     m1.metric("Net Profit (After Fees)", f"${overall_p:,.2f}")
     m2.metric("Portfolio Status", "Online" if overall_p >= 0 else "Pending Recovery")
@@ -152,6 +153,7 @@ with tab2:
                         if opt_symbol in chain:
                             data = chain[opt_symbol]
                             p_val = (data.bid_price + data.ask_price) / 2
+                            # Fallback if spread is zero
                             if p_val == 0: p_val = getattr(data, 'last_price', 0.05)
 
                     if p_val > 0:
@@ -163,6 +165,8 @@ with tab2:
                         total_comm_per_contract = base_comm + 0.045 
                         order_comm = max(1.00, total_comm_per_contract * qty)
                         
+                        # PRE-CALCULATION
+                        actual_premium_dollars = int(round(p_val * 100))
                         total_profit = (p_val * 100 * qty) - order_comm
                         
                         new_row = {
@@ -170,7 +174,7 @@ with tab2:
                             "Type": strategy, 
                             "Strike": round(target_strike, 1), 
                             "Expiry": expiry_date.strftime("%Y-%m-%d"),
-                            "Premium": f"USD {int(round(p_val * 100))}", 
+                            "Premium": f"USD {actual_premium_dollars}", 
                             "Qty": int(qty),
                             "Commission": round(order_comm, 2),
                             "Total Profit": round(total_profit, 2)
@@ -185,6 +189,10 @@ with tab2:
 
     # 3. HISTORY TABLE
     st.write("### Trade History")
-    # Using data_editor allows you to fix any manual mistakes in the profit column
     edited_df = st.data_editor(st.session_state.journal_data, num_rows="dynamic", use_container_width=True, key="ledger_editor")
     st.session_state.journal_data = edited_df
+
+    # --- RESET BUTTON ---
+    if st.button("🗑️ Clear All Data"):
+        st.session_state.journal_data = pd.DataFrame(columns=desired_cols)
+        st.rerun()
