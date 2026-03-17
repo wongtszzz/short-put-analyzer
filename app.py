@@ -22,14 +22,20 @@ st.markdown("""
 
 st.title("🧪 Lucky Lab: Options Quant")
 
-# --- 2. AUTHENTICATION ---
-try:
-    API_KEY = st.secrets["ALPACA_KEY"]
-    SECRET_KEY = st.secrets["ALPACA_SECRET"]
-    stock_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-    opt_client = OptionHistoricalDataClient(API_KEY, SECRET_KEY)
-except Exception as e:
-    st.error("⚠️ Lucky Lab Keys Missing. Add ALPACA_KEY and ALPACA_SECRET to Streamlit Secrets.")
+# --- 2. AUTHENTICATION & CLIENTS ---
+@st.cache_resource
+def get_clients():
+    try:
+        key = st.secrets["ALPACA_KEY"]
+        secret = st.secrets["ALPACA_SECRET"]
+        return StockHistoricalDataClient(key, secret), OptionHistoricalDataClient(key, secret)
+    except:
+        return None, None
+
+stock_client, opt_client = get_clients()
+
+if not stock_client:
+    st.error("⚠️ Alpaca Keys Missing in Streamlit Secrets.")
     st.stop()
 
 # --- 3. CREATE TABS ---
@@ -40,10 +46,10 @@ with tab1:
     st.subheader("Naked Put Scanner")
     col_a, col_b, col_c = st.columns([1, 1, 1])
     ticker_scan = col_a.text_input("Ticker Symbol", value="SPY", key="scan_ticker_input").upper()
-    safety_threshold = col_b.slider("Minimum Safety %", 70, 99, 90, key="safety_slider")
-    min_vol = col_c.number_input("Min Volume", value=0, key="vol_input")
+    safety_threshold = col_b.slider("Minimum Safety %", 70, 99, 90)
+    min_vol = col_c.number_input("Min Volume", value=0)
 
-    if st.button("🔬 Run Lab Analysis", key="run_scan_btn"):
+    if st.button("🔬 Run Lab Analysis"):
         with st.spinner(f"Analyzing {ticker_scan}..."):
             try:
                 price_data = stock_client.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=ticker_scan, feed=DataFeed.IEX))
@@ -65,19 +71,13 @@ with tab1:
                         
                         if prob_otm >= safety_threshold and (getattr(data, 'volume', 0) or 0) >= min_vol:
                             mid = (data.bid_price + data.ask_price) / 2
-                            m_req = max((0.20*current_price - (current_price-strike_from_sym) + mid)*100, (0.10*strike_from_sym)*100)
-                            ann_roc = (mid*100/m_req) * (365/max((expiry-today).days, 1)) * 100
                             results.append({
                                 "Strike": round(strike_from_sym, 1),
                                 "Safety %": round(prob_otm, 1),
-                                "Premium": f"${mid:.2f}", 
-                                "Ann. ROC %": round(ann_roc, 1),
+                                "Premium": f"${mid:.2f}",
                                 "Volume": getattr(data, 'volume', 0)
                             })
-                if results:
-                    st.dataframe(pd.DataFrame(results).sort_values("Ann. ROC %", ascending=False), use_container_width=True)
-                else:
-                    st.warning("No matches found.")
+                st.dataframe(pd.DataFrame(results).sort_values("Strike", ascending=False), use_container_width=True)
             except Exception as e:
                 st.error(f"Scanner Error: {e}")
 
@@ -85,93 +85,74 @@ with tab1:
 with tab2:
     st.subheader("📓 The Lucky Ledger")
 
+    # 2026 IBKR TIERED CONSTANTS
+    OCC_FEE = 0.025
+    ORF_FEE = 0.023
+    MIN_ORDER_FEE = 1.00
+
     desired_cols = ["Ticker", "Type", "Strike", "Expiry", "Premium", "Qty", "Commission", "Total Profit"]
     
     if 'journal_data' not in st.session_state:
         st.session_state.journal_data = pd.DataFrame(columns=desired_cols)
-    else:
-        # Maintenance: strip old "Date" column if it persists
-        if "Date" in st.session_state.journal_data.columns:
-            st.session_state.journal_data = st.session_state.journal_data.drop(columns=["Date"])
 
     # 1. TOP METRICS
-    numeric_profit = pd.to_numeric(st.session_state.journal_data["Total Profit"], errors='coerce').fillna(0)
-    overall_p = numeric_profit.sum()
-    
-    m1, m2 = st.columns(2)
-    m1.metric("Net Profit (After Fees)", f"${overall_p:,.2f}")
-    m2.metric("Portfolio Status", "Online" if overall_p >= 0 else "Pending Recovery")
+    profits = pd.to_numeric(st.session_state.journal_data["Total Profit"], errors='coerce').fillna(0)
+    st.metric("Net Profit (After Fees)", f"${profits.sum():,.2f}")
     st.divider()
 
     # 2. ENTRY FORM
     with st.expander("➕ Log New Trade", expanded=True):
         c1, c2, c3 = st.columns(3)
-        new_ticker = c1.text_input("Ticker", value="SPY", key="ledger_ticker_input").upper()
-        strategy = c2.selectbox("Strategy", options=["Short Put", "Short Call"], index=0, key="strat_select")
-        qty = c3.number_input("Qty", min_value=1, value=1, key="qty_input")
+        t_input = c1.text_input("Ticker", value="SPY").upper()
+        strat = c2.selectbox("Strategy", ["Short Put", "Short Call"])
+        qty = c3.number_input("Qty", min_value=1, value=1)
 
         c4, c5 = st.columns(2)
-        expiry_date = c4.date_input("Expiry Date", value=datetime.now().date(), key="expiry_picker")
-        target_strike = c5.number_input("Target Strike", value=None, step=0.1, format="%.1f", placeholder="Enter Strike...", key="strike_input")
+        exp_date = c4.date_input("Expiry Date", value=datetime.now().date())
+        strike = c5.number_input("Strike", value=0.0, step=0.5)
         
-        if st.button("🚀 Fetch & Commit", key="commit_btn"):
-            if target_strike is None:
-                st.error("Please enter a strike price.")
-            else:
-                try:
-                    is_expired = expiry_date < datetime.now().date()
-                    flag = "P" if strategy == "Short Put" else "C"
-                    strike_str = f"{int(round(target_strike, 1) * 1000):08d}"
-                    formatted_expiry = expiry_date.strftime("%y%m%d")
-                    opt_symbol = f"{new_ticker}{formatted_expiry}{flag}{strike_str}"
-                    p_val = 0.0
+        if st.button("🚀 Fetch & Commit"):
+            try:
+                # 1. Price Logic
+                flag = "P" if strat == "Short Put" else "C"
+                sym = f"{t_input}{exp_date.strftime('%y%m%d')}{flag}{int(strike*1000):08d}"
+                
+                # Fetching Mid-Price
+                chain = opt_client.get_option_chain(OptionChainRequest(underlying_symbol=t_input, expiration_date=exp_date))
+                if sym not in chain:
+                    st.error(f"Contract {sym} not found.")
+                else:
+                    data = chain[sym]
+                    mid_price = (data.bid_price + data.ask_price) / 2
+                    if mid_price == 0: mid_price = getattr(data, 'last_price', 0.01)
+                    
+                    # 2. Commission Logic (2026 Tiered)
+                    if mid_price >= 0.10: base = 0.65
+                    elif mid_price >= 0.05: base = 0.50
+                    else: base = 0.25
+                    
+                    total_per_contract = base + OCC_FEE + ORF_FEE
+                    order_comm = max(MIN_ORDER_FEE, total_per_contract * qty)
+                    
+                    # 3. Calculations
+                    cash_premium = round(mid_price * 100, 2)
+                    net_profit = (cash_premium * qty) - order_comm
+                    
+                    new_row = {
+                        "Ticker": t_input, "Type": strat, "Strike": strike, 
+                        "Expiry": exp_date.strftime("%Y-%m-%d"),
+                        "Premium": cash_premium, "Qty": int(qty),
+                        "Commission": round(order_comm, 2),
+                        "Total Profit": round(net_profit, 2)
+                    }
+                    st.session_state.journal_data = pd.concat([st.session_state.journal_data, pd.DataFrame([new_row])], ignore_index=True)
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Execution Error: {e}")
 
-                    if is_expired:
-                        end_dt = datetime.combine(expiry_date, datetime.now().time())
-                        start_dt = end_dt - timedelta(days=7)
-                        req = OptionBarsRequest(symbol_or_symbols=opt_symbol, timeframe=TimeFrame.Day, start=start_dt, end=end_dt)
-                        res = opt_client.get_option_bars(req)
-                        if opt_symbol in res.data and len(res.data[opt_symbol]) > 0:
-                            p_val = res.data[opt_symbol][-1].close
-                    else:
-                        chain = opt_client.get_option_chain(OptionChainRequest(underlying_symbol=new_ticker, expiration_date=expiry_date))
-                        if opt_symbol in chain:
-                            data = chain[opt_symbol]
-                            p_val = (data.bid_price + data.ask_price) / 2
-                            if p_val == 0: p_val = getattr(data, 'last_price', 0.05)
-
-                    if p_val > 0:
-                        # --- IBKR TIERED CALCULATION ---
-                        # Premium in dollars per contract (e.g., 0.59 -> 59)
-                        premium_received = round(p_val * 100, 2)
-                        
-                        # Commission logic
-                        base = 0.65 if p_val >= 0.10 else (0.50 if p_val >= 0.05 else 0.25)
-                        order_comm = max(1.00, (base + 0.045) * qty)
-                        
-                        # Total Profit = (Premium * Qty) - Commission
-                        net_profit = (premium_received * qty) - order_comm
-                        
-                        new_row = {
-                            "Ticker": new_ticker,
-                            "Type": strategy, 
-                            "Strike": round(target_strike, 1), 
-                            "Expiry": expiry_date.strftime("%Y-%m-%d"),
-                            "Premium": premium_received, # Now showing raw 59, 110, etc.
-                            "Qty": int(qty),
-                            "Commission": round(order_comm, 2),
-                            "Total Profit": round(net_profit, 2)
-                        }
-                        st.session_state.journal_data = pd.concat([st.session_state.journal_data, pd.DataFrame([new_row])], ignore_index=True)
-                        st.rerun()
-                    else:
-                        st.error(f"Could not find price for {opt_symbol}")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-
-    # 3. HISTORY TABLE
+    # 3. HISTORY
     st.write("### Trade History")
-    st.session_state.journal_data = st.data_editor(st.session_state.journal_data, num_rows="dynamic", use_container_width=True, key="ledger_editor")
+    st.session_state.journal_data = st.data_editor(st.session_state.journal_data, num_rows="dynamic", use_container_width=True)
 
     if st.button("🗑️ Reset Ledger"):
         st.session_state.journal_data = pd.DataFrame(columns=desired_cols)
