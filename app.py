@@ -22,7 +22,8 @@ st.markdown("""
 
 h1, h2 = st.columns([2, 1])
 h1.markdown("### 🧪 Lucky Quants Lab")
-if 'last_refresh' not in st.session_state: st.session_state.last_refresh = datetime.now().strftime("%H:%M:%S")
+if 'last_refresh' not in st.session_state: 
+    st.session_state.last_refresh = datetime.now().strftime("%H:%M:%S")
 h2.markdown(f"<p style='text-align: right; color: gray; font-size: 0.8em; padding-top: 15px;'>Refreshed: {st.session_state.last_refresh}</p>", unsafe_allow_html=True)
 st.divider()
 
@@ -32,7 +33,7 @@ try:
     opt_client = OptionHistoricalDataClient(API_KEY, SECRET_KEY)
     stock_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 except:
-    st.error("Alpaca Keys Missing.")
+    st.error("Alpaca Keys Missing in Secrets.")
     st.stop()
 
 # --- 2. PERMANENT STORAGE ---
@@ -54,12 +55,12 @@ if 'journal_data' not in st.session_state:
 # --- 3. TABS ---
 tab1, tab2 = st.tabs(["🔍 Strategy Optimizer", "📓 Lucky Ledger"])
 
-# --- TAB 1: STRATEGY OPTIMIZER (Untouched) ---
+# --- TAB 1: STRATEGY OPTIMIZER ---
 with tab1:
     c1, c2 = st.columns([1, 2])
-    t_scan = c1.text_input("Ticker", value="TSM").upper()
-    safety_target = c2.slider("Safety %", 70, 99, 90)
-    if st.button("🔬 Run Analysis"):
+    t_scan = c1.text_input("Ticker", value="TSM", key="opt_ticker_unique").upper()
+    safety_target = c2.slider("Safety %", 70, 99, 90, key="opt_safety_unique")
+    if st.button("🔬 Run Analysis", key="opt_run_unique"):
         with st.spinner("Analyzing..."):
             try:
                 price_data = stock_client.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=t_scan, feed=DataFeed.IEX))
@@ -83,28 +84,26 @@ with tab1:
 
 # --- TAB 2: LUCKY LEDGER ---
 with tab2:
-    # UPDATED FONT & FORMATTING LOGIC
     raw_total_usd = pd.to_numeric(st.session_state.journal_data["Total Premium Collected"], errors='coerce').fillna(0).sum()
     total_usd_int = int(round(raw_total_usd))
     total_hkd_int = int(round(raw_total_usd * 7.8))
     
-    # Combined string for uniform font size in the metric
     formatted_value = f"{total_usd_int:,} (~HKD {total_hkd_int:,})"
     st.metric(label="**Total Premium Collected** 🤑", value=formatted_value)
 
     with st.expander("➕ Log New Trade", expanded=True):
         l1, l2, l3, l4 = st.columns(4)
-        ticker_log = l1.text_input("Ticker", value="TSM").upper()
-        strat = l2.selectbox("Type", ["Short Put", "Short Call"])
-        qty = l3.number_input("Qty", min_value=1, value=1)
-        exp = l4.date_input("Expiry", value=datetime.now().date())
+        ticker_log = l1.text_input("Ticker", value="TSM", key="log_ticker_unique").upper()
+        strat = l2.selectbox("Type", ["Short Put", "Short Call"], key="log_type_unique")
+        qty = l3.number_input("Qty", min_value=1, value=1, key="log_qty_unique")
+        exp = l4.date_input("Expiry", value=datetime.now().date(), key="log_expiry_unique")
         
         l5, l6, l7 = st.columns(3)
-        strike = l5.number_input("Strike", value=None, step=0.5, format="%g")
-        open_p = l6.number_input("Open Price (Sell)", value=None, step=0.01, format="%.2f")
-        close_p = l7.number_input("Close Price (Buy Back)", value=0.00, step=0.01, format="%.2f")
+        strike = l5.number_input("Strike", value=None, step=0.5, format="%g", key="log_strike_unique")
+        open_p = l6.number_input("Open Price (Sell)", value=None, step=0.01, format="%.2f", key="log_open_unique")
+        close_p = l7.number_input("Close Price (Buy Back)", value=0.00, step=0.01, format="%.2f", key="log_close_unique")
         
-        if st.button("🚀 Commit Trade", use_container_width=True):
+        if st.button("🚀 Commit Trade", use_container_width=True, key="log_commit_unique"):
             if strike is None or open_p is None:
                 st.warning("Enter Strike and Open Price.")
             else:
@@ -124,13 +123,13 @@ with tab2:
                 st.rerun()
 
     st.write("### History")
-    updated_df = st.data_editor(st.session_state.journal_data, num_rows="dynamic", use_container_width=True, key="ledger_editor")
+    updated_df = st.data_editor(st.session_state.journal_data, num_rows="dynamic", use_container_width=True, key="ledger_editor_unique")
     
     if not updated_df.equals(st.session_state.journal_data):
         st.session_state.journal_data = updated_df
         save_data(updated_df)
 
-    if st.button("🔄 Recalculate Everything"):
+    if st.button("🔄 Recalculate Everything", key="log_recalc_unique"):
         df = st.session_state.journal_data.copy()
         df["Open Price"] = pd.to_numeric(df["Open Price"], errors='coerce').fillna(0)
         df["Close Price"] = pd.to_numeric(df["Close Price"], errors='coerce').fillna(0)
