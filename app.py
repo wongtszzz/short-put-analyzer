@@ -33,7 +33,7 @@ try:
     opt_client = OptionHistoricalDataClient(API_KEY, SECRET_KEY)
     stock_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 except:
-    st.error("Alpaca Keys Missing in Secrets.")
+    st.error("Alpaca Keys Missing.")
     st.stop()
 
 # --- 2. PERMANENT STORAGE & SORTING ---
@@ -43,15 +43,10 @@ def save_data(df):
     df.to_csv(DB_FILE, index=False)
 
 def apply_custom_sort(df):
-    """Tier 1: Open trades (Furthest expiry first). Tier 2: Others (Recent expiry first)."""
     if df.empty: return df
     df = df.copy()
     df['Expiry_dt'] = pd.to_datetime(df['Expiry'], errors='coerce')
-    df['is_open'] = df['Status'] == "Open / Running"
-    
-    # Sort by is_open (True first), then by Expiry_dt
-    # For open trades, we want furthest first; for closed, we want most recent first.
-    # To keep it simple and consistent: Open at top, then descending by date.
+    df['is_open'] = df['Status'].astype(str).str.contains("Open", case=False, na=False)
     df = df.sort_values(by=['is_open', 'Expiry_dt'], ascending=[False, False])
     return df.drop(columns=['Expiry_dt', 'is_open'])
 
@@ -60,14 +55,22 @@ def load_data():
     if os.path.exists(DB_FILE):
         try:
             df = pd.read_csv(DB_FILE)
-            # Migration handling
-            if "Total Premium Collected" in df.columns:
-                df = df.rename(columns={"Total Premium Collected": "Premium"})
+            # FIX: Mapping all possible old column names to 'Premium'
+            rename_map = {
+                "Total Premium Collected": "Premium",
+                "Premium (Total)": "Premium",
+                "Premium Collected": "Premium"
+            }
+            df = df.rename(columns=rename_map)
+            
+            # Ensure all columns exist so we never get a KeyError again
             for c in cols:
                 if c not in df.columns:
-                    df[c] = 0.0 if c in ["Open Price", "Close Price", "Premium"] else (1 if c == "Qty" else "")
+                    df[c] = 0.0 if c in ["Open Price", "Close Price", "Premium"] else (1 if c == "Qty" else "Unknown")
+            
             return apply_custom_sort(df[cols])
-        except: pass
+        except Exception as e:
+            st.error(f"Load Error: {e}")
     return pd.DataFrame(columns=cols)
 
 if 'journal_data' not in st.session_state:
@@ -79,9 +82,9 @@ tab1, tab2 = st.tabs(["🔍 Strategy Optimizer", "📓 Lucky Ledger"])
 # --- TAB 1: STRATEGY OPTIMIZER ---
 with tab1:
     c1, c2 = st.columns([1, 2])
-    t_scan = c1.text_input("Ticker", value="TSM", key="opt_tk_final_v2").upper()
-    safety_target = c2.slider("Safety %", 70, 99, 90, key="opt_sf_final_v2")
-    if st.button("🔬 Run Analysis", key="opt_btn_final_v2"):
+    t_scan = c1.text_input("Ticker", value="TSM", key="opt_tk_fix").upper()
+    safety_target = c2.slider("Safety %", 70, 99, 90, key="opt_sf_fix")
+    if st.button("🔬 Run Analysis", key="opt_btn_fix"):
         with st.spinner("Analyzing..."):
             try:
                 price_data = stock_client.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=t_scan, feed=DataFeed.IEX))
@@ -104,23 +107,27 @@ with tab1:
 
 # --- TAB 2: LUCKY LEDGER ---
 with tab2:
-    # Summary Metric
-    raw_val = pd.to_numeric(st.session_state.journal_data["Premium"], errors='coerce').fillna(0).sum()
+    # Safely handle the Premium calculation
+    if "Premium" in st.session_state.journal_data.columns:
+        raw_val = pd.to_numeric(st.session_state.journal_data["Premium"], errors='coerce').fillna(0).sum()
+    else:
+        raw_val = 0.0
+        
     st.metric(label="**Total Premium Collected** 🤑", value=f"{int(round(raw_val)):,} (~HKD {int(round(raw_val * 7.8)):,})")
 
     with st.expander("➕ Log New Trade", expanded=True):
         l1, l2, l3, l4 = st.columns(4)
-        t_log = l1.text_input("Ticker", value="TSM", key="log_tk_final_v2").upper()
-        type_log = l2.selectbox("Type", ["Short Put", "Short Call"], key="log_ty_final_v2")
-        qty_log = l3.number_input("Qty", min_value=1, value=1, key="log_q_final_v2")
-        exp_log = l4.date_input("Expiry", value=datetime.now().date(), key="log_ex_final_v2")
+        t_log = l1.text_input("Ticker", value="TSM", key="log_tk_fix").upper()
+        type_log = l2.selectbox("Type", ["Short Put", "Short Call"], key="log_ty_fix")
+        qty_log = l3.number_input("Qty", min_value=1, value=1, key="log_q_fix")
+        exp_log = l4.date_input("Expiry", value=datetime.now().date(), key="log_ex_fix")
         
         l5, l6, l7 = st.columns(3)
-        stk_log = l5.number_input("Strike", value=None, step=0.5, format="%g", key="log_st_final_v2")
-        op_log = l6.number_input("Open Price (Sell)", value=None, step=0.01, format="%.2f", key="log_op_final_v2")
-        cl_log = l7.number_input("Close Price (Buy Back)", value=0.00, step=0.01, format="%.2f", key="log_cl_final_v2")
+        stk_log = l5.number_input("Strike", value=None, step=0.5, format="%g", key="log_st_fix")
+        op_log = l6.number_input("Open Price (Sell)", value=None, step=0.01, format="%.2f", key="log_op_fix")
+        cl_log = l7.number_input("Close Price (Buy Back)", value=0.00, step=0.01, format="%.2f", key="log_cl_fix")
         
-        if st.button("🚀 Commit Trade", use_container_width=True, key="log_cmt_final_v2"):
+        if st.button("🚀 Commit Trade", use_container_width=True, key="log_cmt_fix"):
             if stk_log and op_log is not None:
                 net = round(((float(op_log) - float(cl_log)) * 100 * qty_log) - max(1.05, 0.70 * qty_log), 2)
                 today = datetime.now().date()
@@ -138,13 +145,13 @@ with tab2:
                 st.rerun()
 
     st.write("### History")
-    edited_df = st.data_editor(st.session_state.journal_data, num_rows="dynamic", use_container_width=True, key="editor_final_v2")
+    edited_df = st.data_editor(st.session_state.journal_data, num_rows="dynamic", use_container_width=True, key="editor_fix")
     
     if not edited_df.equals(st.session_state.journal_data):
         st.session_state.journal_data = edited_df
         save_data(edited_df)
 
-    if st.button("🔄 Recalculate Everything", key="recalc_final_v2"):
+    if st.button("🔄 Recalculate Everything", key="recalc_fix"):
         df = st.session_state.journal_data.copy()
         df["Open Price"] = pd.to_numeric(df["Open Price"], errors='coerce').fillna(0)
         df["Close Price"] = pd.to_numeric(df["Close Price"], errors='coerce').fillna(0)
