@@ -39,19 +39,15 @@ def load_and_clean():
             df = pd.read_csv(DB)
             df = df.loc[:, ~df.columns.duplicated()].copy()
             df = df.rename(columns={"Total Premium Collected": "Premium", "Premium (Total)": "Premium", "Premium (total)": "Premium"})
-            
             if isinstance(df.get("Premium"), pd.DataFrame):
                 df = df.drop(columns="Premium").assign(Premium=df["Premium"].bfill(axis=1).iloc[:, 0])
-            
             for c in COLS:
                 if c not in df.columns:
                     df[c] = 0.0 if c in ["Open Price", "Close Price", "Premium"] else (1 if c == "Qty" else "Unknown")
-            
             df["Premium"] = pd.to_numeric(df["Premium"], errors='coerce').fillna(0.0)
             df['is_open'] = df['Status'].astype(str).str.contains("Open", case=False, na=False)
             df['exp_dt'] = pd.to_datetime(df['Expiry'], errors='coerce')
             df = df.sort_values(by=['is_open', 'exp_dt'], ascending=[False, False])
-            
             return df[COLS].reset_index(drop=True)
         except:
             return pd.DataFrame(columns=COLS)
@@ -96,33 +92,46 @@ with tab2:
     m2.metric("**Active Trades** 📈", active_count)
 
     with st.expander("➕ Log New Trade"):
+        # Reset Logic: Clears Ticker, Strike, and Open Price
+        if st.button("🔄 Reset Form", use_container_width=False):
+            st.session_state.log_tk = ""
+            st.session_state.log_st = None
+            st.session_state.log_op = None
+            st.rerun()
+
         l1, l2, l3, l4 = st.columns(4)
-        n_tk = l1.text_input("Ticker", value="TSM", key="log_tk").upper()
+        n_tk = l1.text_input("Ticker", value="TSM", key="log_tk", placeholder="Ticker...").upper()
         n_ty = l2.selectbox("Type", ["Short Put", "Short Call"], key="log_ty")
         n_qt = l3.number_input("Qty", 1, key="log_qty")
         n_ex = l4.date_input("Expiry", datetime.now().date(), key="log_ex")
-        l5, l6 = st.columns(2)
         
-        # value=None prevents the default 0.0 from appearing
+        l5, l6 = st.columns(2)
+        # Placeholder + value=None makes the field "empty" on focus/click
         n_st = l5.number_input("Strike", value=None, placeholder="Type Strike...", step=0.1, key="log_st", format="%.1f")
         n_op = l6.number_input("Open Price", value=None, placeholder="Type Price...", step=0.1, key="log_op", format="%.1f")
         
         if st.button("🚀 Commit Trade", use_container_width=True, key="log_btn"):
-            if n_st is not None and n_op is not None:
+            if n_st is not None and n_op is not None and n_tk != "":
                 net = round((n_op * 100 * n_qt) - max(1.05, 0.70 * n_qt), 2)
                 stat = "Expired (Win)" if n_ex < datetime.now().date() else "Open / Running"
                 new_row = pd.DataFrame([{"Ticker": n_tk, "Type": n_ty, "Strike": round(n_st, 1), "Expiry": str(n_ex), "Open Price": round(n_op, 1), "Close Price": 0.0, "Qty": n_qt, "Premium": net, "Status": stat}])
                 st.session_state.journal = pd.concat([df_j, new_row], ignore_index=True)
-                save_and_backup(st.session_state.journal); st.rerun()
+                save_and_backup(st.session_state.journal)
+                
+                # Full cleanup after successful commit
+                st.session_state.log_tk = ""
+                st.session_state.log_st = None
+                st.session_state.log_op = None
+                st.rerun()
             else:
-                st.warning("Please enter both Strike and Open Price.")
+                st.warning("Please ensure Ticker, Strike, and Open Price are entered.")
 
     st.write("### History")
     edt = st.data_editor(
         st.session_state.journal, 
         num_rows="dynamic", 
         use_container_width=True, 
-        key="ledger_final_v9",
+        key="ledger_final_v11",
         column_config={
             "Strike": st.column_config.NumberColumn("Strike", format="%.1f"),
             "Open Price": st.column_config.NumberColumn("Open Price", format="%.1f"),
