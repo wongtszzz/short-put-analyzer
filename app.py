@@ -10,7 +10,20 @@ from alpaca.data.enums import OptionsFeed, DataFeed
 
 # --- 1. CONFIG & API ---
 st.set_page_config(page_title="Lucky Quants Lab", page_icon="🧪", layout="wide")
-st.markdown("<style>.stMetric { background-color: #f0f2f6; padding: 5px 15px; border-radius: 10px; border: 1px solid #dcdcdc; } .footer { position: fixed; bottom: 10px; right: 10px; color: gray; font-size: 0.7em; }</style>", unsafe_allow_html=True)
+
+# FIX: Theme-adaptive CSS for Metric Boxes (Works in Light & Dark Mode)
+st.markdown("""
+<style>
+    [data-testid="stMetric"] {
+        background-color: rgba(128, 128, 128, 0.1); 
+        padding: 15px; 
+        border-radius: 10px; 
+        border: 1px solid rgba(128, 128, 128, 0.3);
+        box-shadow: 0px 2px 4px rgba(0,0,0,0.05);
+    }
+    .footer { position: fixed; bottom: 10px; right: 10px; color: gray; font-size: 0.7em; }
+</style>
+""", unsafe_allow_html=True)
 
 # Branding Header (Top Left)
 st.markdown("### 🧪 Lucky Quants Lab")
@@ -92,7 +105,6 @@ with tab2:
     m2.metric("**Active Trades** 📈", active_count)
 
     with st.expander("➕ Log New Trade"):
-        # Reset Logic: Clears Ticker, Strike, and Open Price
         if st.button("🔄 Reset Form", use_container_width=False):
             st.session_state.log_tk = ""
             st.session_state.log_st = None
@@ -106,7 +118,6 @@ with tab2:
         n_ex = l4.date_input("Expiry", datetime.now().date(), key="log_ex")
         
         l5, l6 = st.columns(2)
-        # Placeholder + value=None makes the field "empty" on focus/click
         n_st = l5.number_input("Strike", value=None, placeholder="Type Strike...", step=0.1, key="log_st", format="%.1f")
         n_op = l6.number_input("Open Price", value=None, placeholder="Type Price...", step=0.1, key="log_op", format="%.1f")
         
@@ -118,7 +129,6 @@ with tab2:
                 st.session_state.journal = pd.concat([df_j, new_row], ignore_index=True)
                 save_and_backup(st.session_state.journal)
                 
-                # Full cleanup after successful commit
                 st.session_state.log_tk = ""
                 st.session_state.log_st = None
                 st.session_state.log_op = None
