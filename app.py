@@ -21,7 +21,7 @@ st.markdown("""
         border: 1px solid rgba(128, 128, 128, 0.2);
         border-radius: 12px;
         padding: 15px;
-        height: 140px; /* Forces both boxes to be identical size */
+        height: 140px; 
         display: flex;
         flex-direction: column;
         justify-content: center;
@@ -34,11 +34,11 @@ st.markdown("""
     }
     [data-testid="stMetricDelta"] {
         font-size: 1.1rem !important;
-        color: #888888 !important; /* Neutral gray for HKD */
+        color: #888888 !important; 
         justify-content: center !important;
     }
     [data-testid="stMetricDelta"] > svg {
-        display: none; /* Hides the up/down arrow indicator */
+        display: none; 
     }
     .footer-right { position: fixed; bottom: 10px; right: 10px; color: gray; font-size: 0.8em; z-index: 1000; }
 </style>
@@ -92,8 +92,13 @@ def load_journal():
         df['is_open'] = df['Status'].astype(str).str.contains("Open", case=False, na=False)
         df = df.sort_values(by=['is_open', 'exp_dt'], ascending=[False, False])
         return df[COLS].reset_index(drop=True)
-    except:
-        return pd.DataFrame(columns=COLS)
+    except Exception as e:
+        # EMERGENCY STOP: Protects data from being wiped if GitHub has a network error
+        if "404" in str(e):
+            return pd.DataFrame(columns=COLS)
+        else:
+            st.error(f"⚠️ Emergency Stop: Could not connect to GitHub. Halting app to protect your data. Error: {e}")
+            st.stop()
 
 if 'journal' not in st.session_state: 
     st.session_state.journal = load_journal()
@@ -138,7 +143,6 @@ with tab2:
     active_count = len(df_j[df_j["Status"].astype(str).str.contains("Open", na=False)])
     
     m1, m2 = st.columns(2)
-    # Using 'delta' as our subtitle trick, delta_color="off" keeps it gray
     m1.metric("Total Premium 🤑", f"${total_prem:,.2f}", f"≈ HKD {(total_prem*7.8):,.2f}", delta_color="off")
     m2.metric("Active Trades 📈", str(active_count))
 
@@ -160,3 +164,52 @@ with tab2:
                 new_row = pd.DataFrame([{"Ticker": n_tk, "Type": n_ty, "Strike": round(n_st, 1), "Expiry": str(n_ex), "Open Price": round(float(n_op), 2), "Close Price": 0.0, "Qty": n_qt, "Commission": comm, "Premium": net, "Status": stat}])
                 st.session_state.journal = pd.concat([df_j, new_row], ignore_index=True)
                 save_journal(st.session_state.journal)
+                st.rerun()
+
+    st.write("### Trade History")
+    
+    # Recalculation Engine
+    def refresh_calculations(current_df):
+        for col in ["Strike", "Open Price", "Close Price", "Qty", "Commission"]:
+            current_df[col] = pd.to_numeric(current_df[col], errors='coerce').fillna(0)
+        
+        def update_row(r):
+            # Recalculate Premium based on current inputs
+            p = round(((float(r["Open Price"]) - float(r["Close Price"])) * 100 * int(r["Qty"])) - float(r["Commission"]), 2)
+            
+            # Recalculate Status
+            try: ex_d = pd.to_datetime(r["Expiry"]).date()
+            except: ex_d = datetime.now().date()
+            
+            if float(r["Close Price"]) > 0: s = "Closed"
+            elif ex_d < datetime.now().date(): s = "Expired (Win)"
+            else: s = "Open / Running"
+            
+            return pd.Series([p, s])
+        
+        current_df[["Premium", "Status"]] = current_df.apply(update_row, axis=1)
+        return current_df
+
+    # Data Editor (Safe Mode - No Disabled Columns)
+    edt = st.data_editor(
+        st.session_state.journal, 
+        num_rows="dynamic", 
+        use_container_width=True, 
+        key="ledger_editor_final",
+        column_config={
+            "Strike": st.column_config.NumberColumn(format="%.1f"),
+            "Open Price": st.column_config.NumberColumn(format="%.2f"),
+            "Close Price": st.column_config.NumberColumn(format="%.2f"),
+            "Commission": st.column_config.NumberColumn(format="$%.2f"),
+            "Premium": st.column_config.NumberColumn(format="$%.2f", help="Auto-calculated (Do not edit manually)")
+        }
+    )
+
+    # Listen for edits, recalculate, and push to GitHub
+    if not edt.equals(st.session_state.journal):
+        updated_df = refresh_calculations(edt)
+        st.session_state.journal = updated_df
+        save_journal(updated_df)
+        st.rerun()
+
+st.markdown(f'<div class="footer-right">Last Synced to GitHub: {st.session_state.last_update}</div>', unsafe_allow_html=True)
