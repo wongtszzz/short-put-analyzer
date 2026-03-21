@@ -145,7 +145,6 @@ with tab1:
                 else: 
                     st.warning("No matches.")
             except Exception as e: 
-                # FIXED: This is where the SyntaxError was!
                 st.error(f"Error: {e}")
 
 # --- LEDGER ---
@@ -172,7 +171,8 @@ with tab2:
     if not weekly_df.empty:
         best_row = weekly_df.loc[weekly_df["Premium"].idxmax()]
         worst_row = weekly_df.loc[weekly_df["Premium"].idxmin()]
-        best_str = f"{best_row['Ticker']} (+${best_row['Premium']:.0f})"
+        # Fixed: Removed the '+' from the best trade string
+        best_str = f"{best_row['Ticker']} (${best_row['Premium']:.0f})"
         worst_str = f"Worst: {worst_row['Ticker']} (${worst_row['Premium']:.0f})"
     else:
         best_str, worst_str = "No trades", "No trades"
@@ -187,18 +187,21 @@ with tab2:
     r2c2.metric("Top Trade (7d) 🏆", best_str, worst_str, delta_color="off")
 
     with st.expander("➕ Log New Trade"):
+        # Reordered the inputs: Ticker, Expiry, Type, Qty
         l1, l2, l3, l4 = st.columns(4)
         n_tk = l1.text_input("Ticker", key="new_tk").upper()
-        n_ty = l2.selectbox("Type", ["Short Put", "Short Call"])
-        n_qt = l3.number_input("Qty", value=1, min_value=1)
-        n_ex = l4.date_input("Expiry", datetime.now().date() + timedelta(days=7))
+        n_ex = l2.date_input("Expiry", datetime.now().date() + timedelta(days=7))
+        n_ty = l3.selectbox("Type", ["Short Put", "Short Call"])
+        n_qt = l4.number_input("Qty", value=1, min_value=1)
         
+        # Strike and Open Price are now completely blank by default!
         l5, l6 = st.columns(2)
-        n_st = l5.number_input("Strike", value=0.0, format="%.1f")
-        n_op = l6.number_input("Open Price", value=0.0, format="%.2f")
+        n_st = l5.number_input("Strike", value=None, format="%.1f", placeholder="e.g. 150.5")
+        n_op = l6.number_input("Open Price", value=None, format="%.2f", placeholder="e.g. 0.85")
         
         if st.button("🚀 Commit Trade", use_container_width=True, type="primary"):
-            if n_tk:
+            # Added a check so it only commits if you actually typed in a strike and price
+            if n_tk and n_st is not None and n_op is not None:
                 comm = round(n_qt * 1.05, 2)
                 net = round((float(n_op) * 100 * n_qt) - comm, 2)
                 stat = "Expired (Win)" if n_ex < datetime.now().date() else "Open / Active"
@@ -207,6 +210,8 @@ with tab2:
                 st.session_state.journal = pd.concat([df_j.drop(columns=['temp_dt'], errors='ignore'), new_row], ignore_index=True)
                 save_journal(st.session_state.journal)
                 st.rerun()
+            else:
+                st.warning("⚠️ Please fill in the Ticker, Strike, and Open Price before committing.")
 
     st.write("### Trade History")
     
@@ -234,7 +239,7 @@ with tab2:
         st.session_state.journal.drop(columns=['temp_dt'], errors='ignore'), 
         num_rows="dynamic", 
         use_container_width=True, 
-        key="ledger_editor_v8",
+        key="ledger_editor_v9",
         column_config={
             "Date": st.column_config.TextColumn("Date", help="YYYY-MM-DD"),
             "Strike": st.column_config.NumberColumn(format="%.1f"),
