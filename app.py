@@ -18,12 +18,16 @@ st.markdown("""
 <style>
     /* Ensure metrics don't cut off and look clean */
     [data-testid="stMetricValue"] {
-        font-size: 1.8rem !important;
-        word-break: break-all !important;
+        font-size: 1.6rem !important;
+        white-space: nowrap !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-weight: bold !important;
+        font-size: 1.1rem !important;
     }
     [data-testid="stMetric"] {
         background-color: rgba(28, 131, 225, 0.1); 
-        padding: 20px; 
+        padding: 15px; 
         border-radius: 15px; 
         border: 1px solid rgba(128, 128, 128, 0.3);
     }
@@ -47,15 +51,14 @@ try:
     gh = Github(GITHUB_TOKEN)
     repo = gh.get_repo(GITHUB_REPO)
 except Exception as e:
-    st.error(f"Missing or incorrect secrets! Please check your Streamlit Secrets. Error: {e}")
+    st.error(f"Missing or incorrect secrets! Please check your Streamlit Secrets.")
     st.stop()
 
-# --- 2. LOGIC & DATA ENGINE (GitHub Backend) ---
+# --- 2. LOGIC & DATA ENGINE ---
 FILE_PATH = "lucky_ledger.csv"
 COLS = ["Ticker", "Type", "Strike", "Expiry", "Open Price", "Close Price", "Qty", "Commission", "Premium", "Status"]
 
 def save_journal(df):
-    """Pushes the DataFrame directly to GitHub as a CSV"""
     try:
         csv_content = df[COLS].to_csv(index=False)
         commit_message = f"Ledger update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -69,7 +72,6 @@ def save_journal(df):
         st.error(f"Failed to save to GitHub: {e}")
 
 def load_journal():
-    """Pulls the CSV file directly from the GitHub repo"""
     try:
         contents = repo.get_contents(FILE_PATH)
         decoded_content = base64.b64decode(contents.content).decode('utf-8')
@@ -100,7 +102,7 @@ with tab1:
     iv_input = c3.slider("Est. Implied Volatility (IV) %", 10, 200, 30) 
     
     if st.button("🔬 Run Analysis", type="primary"):
-        with st.spinner("Fetching data from Alpaca..."):
+        with st.spinner("Fetching data..."):
             try:
                 px = stock_client.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=tk, feed=DataFeed.IEX))[tk].ask_price
                 exp = datetime.now() + timedelta(days=(4-datetime.now().weekday()+7)%7 or 7)
@@ -115,12 +117,10 @@ with tab1:
                         if prob >= sf:
                             mid = (d.bid_price + d.ask_price) / 2
                             res.append({"Strike": stk_val, "Safety %": round(prob, 1), "Premium": round(mid, 2), "Est. Income": round(mid*100, 2)})
-                st.success(f"**{tk} Current Price:** ${px:.2f} | **Target Expiry:** {exp.date()}")
-                if res:
-                    st.dataframe(pd.DataFrame(res).sort_values("Strike", ascending=False), use_container_width=True)
-                else:
-                    st.warning("No options found meeting criteria.")
-            except Exception as e: st.error(f"API Error: {e}")
+                st.success(f"**{tk} Price:** ${px:.2f} | **Expiry:** {exp.date()}")
+                if res: st.dataframe(pd.DataFrame(res).sort_values("Strike", ascending=False), use_container_width=True)
+                else: st.warning("No matches found.")
+            except Exception as e: st.error(f"Error: {e}")
 
 # --- LEDGER ---
 with tab2:
@@ -129,10 +129,9 @@ with tab2:
     active_count = len(df_j[df_j["Status"].astype(str).str.contains("Open", na=False)])
     
     m1, m2 = st.columns(2)
-    # Fixed formatting to prevent cutting off numbers
-    m1.metric("Total Premium (USD)", f"${total_prem:,.2f}")
-    m1.caption(f"≈ HKD {(total_prem*7.8):,.2f}") # Shown as caption to ensure space
-    m2.metric("Active Trades", active_count)
+    # Merged HKD into the metric line
+    m1.metric("Total Premium 🤑", f"${total_prem:,.2f}", delta=f"≈ HKD {(total_prem*7.8):,.0f}", delta_color="normal")
+    m2.metric("Active Trades 📈", active_count)
 
     with st.expander("➕ Log New Trade"):
         l1, l2, l3, l4 = st.columns(4)
@@ -141,11 +140,11 @@ with tab2:
         n_qt = l3.number_input("Qty", value=1, min_value=1, key="n_qt")
         n_ex = l4.date_input("Expiry", datetime.now().date(), key="n_ex")
         l5, l6 = st.columns(2)
-        n_st = l5.number_input("Strike", value=None, placeholder="Strike", format="%.1f", key="n_st")
-        n_op = l6.number_input("Open Price", value=None, placeholder="Price", format="%.2f", key="n_op")
+        n_st = l5.number_input("Strike", value=0.0, format="%.1f", key="n_st")
+        n_op = l6.number_input("Open Price", value=0.0, format="%.2f", key="n_op")
         
         if st.button("🚀 Commit Trade", use_container_width=True, type="primary"):
-            if n_st and n_op and n_tk:
+            if n_tk:
                 comm = round(n_qt * 1.05, 2)
                 net = round((float(n_op) * 100 * n_qt) - comm, 2)
                 stat = "Expired (Win)" if n_ex < datetime.now().date() else "Open / Running"
@@ -155,17 +154,14 @@ with tab2:
                 st.rerun()
 
     st.write("### Trade History")
-    # THE RECALCULATION ENGINE
     def refresh_calculations(current_df):
         for col in ["Strike", "Open Price", "Close Price", "Qty", "Commission"]:
             current_df[col] = pd.to_numeric(current_df[col], errors='coerce').fillna(0)
         
         def update_row(r):
-            # Formula: (Open - Close) * 100 * Qty - Commission
             p = round(((float(r["Open Price"]) - float(r["Close Price"])) * 100 * int(r["Qty"])) - float(r["Commission"]), 2)
             try: ex_d = datetime.strptime(str(r["Expiry"]), "%Y-%m-%d").date()
             except: ex_d = datetime.now().date()
-            
             if float(r["Close Price"]) > 0: s = "Closed"
             else: s = "Expired (Win)" if ex_d < datetime.now().date() else "Open / Running"
             return pd.Series([p, s])
@@ -177,17 +173,16 @@ with tab2:
         st.session_state.journal, 
         num_rows="dynamic", 
         use_container_width=True, 
-        key="ledger_editor",
+        key="ledger_editor_v2",
         column_config={
             "Strike": st.column_config.NumberColumn(format="%.1f"),
             "Open Price": st.column_config.NumberColumn(format="%.2f"),
             "Close Price": st.column_config.NumberColumn(format="%.2f"),
             "Commission": st.column_config.NumberColumn(format="$%.2f"),
-            "Premium": st.column_config.NumberColumn(format="$%.2f", help="Auto-calculated from Prices & Commission")
+            "Premium": st.column_config.NumberColumn(format="$%.2f")
         }
     )
 
-    # Sync to GitHub if user changed any cell
     if not edt.equals(st.session_state.journal):
         updated_df = refresh_calculations(edt)
         st.session_state.journal = updated_df
