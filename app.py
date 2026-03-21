@@ -139,11 +139,15 @@ with tab1:
 # --- LEDGER ---
 with tab2:
     df_j = st.session_state.journal
-    total_prem = df_j["Premium"].sum()
+    
+    # PRO HACK: Filter for Realized P&L only (Exclude Open Trades from the total)
+    realized_df = df_j[~df_j["Status"].astype(str).str.contains("Open", na=False)]
+    total_prem = realized_df["Premium"].sum()
+    
     active_count = len(df_j[df_j["Status"].astype(str).str.contains("Open", na=False)])
     
     m1, m2 = st.columns(2)
-    m1.metric("Total Premium 🤑", f"${total_prem:,.2f}", f"≈ HKD {(total_prem*7.8):,.2f}", delta_color="off")
+    m1.metric("Total Realized Premium 🤑", f"${total_prem:,.2f}", f"≈ HKD {(total_prem*7.8):,.2f}", delta_color="off")
     m2.metric("Active Trades 📈", str(active_count))
 
     with st.expander("➕ Log New Trade"):
@@ -159,8 +163,9 @@ with tab2:
         if st.button("🚀 Commit Trade", use_container_width=True, type="primary"):
             if n_tk:
                 comm = round(n_qt * 1.05, 2)
+                # For new trades, close price is 0, so premium is max potential
                 net = round((float(n_op) * 100 * n_qt) - comm, 2)
-                stat = "Expired (Win)" if n_ex < datetime.now().date() else "Open / Running"
+                stat = "Expired (Win)" if n_ex < datetime.now().date() else "Open / Active"
                 new_row = pd.DataFrame([{"Ticker": n_tk, "Type": n_ty, "Strike": round(n_st, 1), "Expiry": str(n_ex), "Open Price": round(float(n_op), 2), "Close Price": 0.0, "Qty": n_qt, "Commission": comm, "Premium": net, "Status": stat}])
                 st.session_state.journal = pd.concat([df_j, new_row], ignore_index=True)
                 save_journal(st.session_state.journal)
@@ -168,28 +173,39 @@ with tab2:
 
     st.write("### Trade History")
     
-    # Recalculation Engine
+    # Advanced Recalculation Engine
     def refresh_calculations(current_df):
         for col in ["Strike", "Open Price", "Close Price", "Qty", "Commission"]:
             current_df[col] = pd.to_numeric(current_df[col], errors='coerce').fillna(0)
         
         def update_row(r):
-            # Recalculate Premium based on current inputs
-            p = round(((float(r["Open Price"]) - float(r["Close Price"])) * 100 * int(r["Qty"])) - float(r["Commission"]), 2)
+            open_p = float(r["Open Price"])
+            close_p = float(r["Close Price"])
+            qty = int(r["Qty"])
+            comm = float(r["Commission"])
+            
+            # Recalculate Premium: (Open - Close) * 100 * Qty - Comm
+            # If Close > Open, this naturally results in a negative number (Loss)
+            p = round(((open_p - close_p) * 100 * qty) - comm, 2)
             
             # Recalculate Status
             try: ex_d = pd.to_datetime(r["Expiry"]).date()
             except: ex_d = datetime.now().date()
             
-            if float(r["Close Price"]) > 0: s = "Closed"
-            elif ex_d < datetime.now().date(): s = "Expired (Win)"
-            else: s = "Open / Running"
+            if close_p > 0:
+                # Scenario 3: Closed Early
+                s = "Closed (Loss)" if close_p > open_p else "Closed (Win)"
+            elif ex_d < datetime.now().date():
+                # Scenario 2: Expired Worthless
+                s = "Expired (Win)"
+            else:
+                # Scenario 1: Still running
+                s = "Open / Active"
             
             return pd.Series([p, s])
         
         current_df[["Premium", "Status"]] = current_df.apply(update_row, axis=1)
         return current_df
-
     # Data Editor (Safe Mode - No Disabled Columns)
     edt = st.data_editor(
         st.session_state.journal, 
